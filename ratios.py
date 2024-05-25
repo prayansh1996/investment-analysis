@@ -1,5 +1,7 @@
 import pandas as pd
 import re
+import datetime
+import yfinance as yf
 from dateutil.relativedelta import relativedelta
 from packages.mftool import Mftool
 
@@ -19,8 +21,9 @@ YFINANCE_INDEX_CODES = {
 class Ratios:
     def Ratios(self, fund):
         self.fund = fund
+        self.scheme_details = SchemeDetails(fund)
     
-    def market_capture_ratio(returns):
+    def _market_capture_ratio(returns):
         """
         Function to calculate the upside and downside capture for a given set of returns.
         The function is set up so that the investment's returns are in the first column of the dataframe
@@ -65,11 +68,13 @@ class SchemeDetails:
         self.fund = fund
         self.scheme_details = self._get_scheme_details()
 
-    def get_nav(self):
-        pass
-
     def get_scheme_details(self):
         return self.scheme_details
+
+    def get_nav(self, period):
+        if self._is_benchmark():
+            return self._get_benchmark_nav(period)
+        return self._get_fund_nav(period)
 
     def _get_scheme_details(self):
         if self.fund == 'NIFTY 50':
@@ -111,6 +116,9 @@ class SchemeDetails:
         return scheme_df.iloc[0]
 
     def _is_benchmark(self):
+        if self.fund == 'NIFTY 50':
+            return True
+
         return len(eq_schemes[eq_schemes['benchmark'].str.startswith(self.fund, na=False)]) > 1
 
     def _build_benchmark_details(self, benchmark):
@@ -135,6 +143,20 @@ class SchemeDetails:
             return True
         return False
 
+    def _get_benchmark_nav(self, start_date):
+        start_date = str(convert_period_to_date(period))
+        end_date = str(datetime.date.today())
+        symbol = self.scheme_details['symbol'].iloc[0]
+        nav_df = yf.download(symbol, start_date, end_date)
+        return nav_df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'date', 'Close': 'nav'})
+
+    def _get_fund_nav(self, period):
+        end_date = str(datetime.date.today())
+        scheme_code = self.scheme_details['schemeCode'].iloc[0]
+        nav_df = mf.history(code='0P0000XWAT',start=None,end=None,period=period,as_dataframe=True)
+        return nav_df.reset_index()[['date', 'nav']]
+
+
 def convert_period_to_date(period):
     # Get the current date
     current_date = datetime.date.today()
@@ -154,7 +176,10 @@ def convert_period_to_date(period):
     months = int(months[0]) if months else 0
     days = int(days[0]) if days else 0
     
-    return current_date - relativedelta(years=years, months=months, days=days)
+    # Subtract the time period from the current date
+    new_date = current_date - relativedelta(years=years, months=months, days=days)
+    
+    return new_date
 
 
 def truncate_string(s, max_length):
