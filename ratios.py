@@ -1,11 +1,20 @@
 import pandas as pd
 import re
+from dateutil.relativedelta import relativedelta
 from packages.mftool import Mftool
 
 schemes = pd.read_csv('./data/scheme_details.csv')
 eq_schemes = pd.read_csv('./data/equity_schemes.csv')
 
 mf = Mftool()
+
+COLUMNS = ['schemeCode', 'schemeName', 'category', 'benchmark', 'symbol', 'shortName', 'longName']
+
+YFINANCE_INDEX_CODES = {
+    'NIFTY 50': '^NSEI',
+    'NIFTY 100': '^CNX100',
+    'S&P BSE 100': 'BSE-100.BO'
+}
 
 class Ratios:
     def Ratios(self, fund):
@@ -54,20 +63,22 @@ class Ratios:
 class SchemeDetails:
     def __init__(self, fund):
         self.fund = fund
-        self.scheme_details = self.get_scheme_details()
+        self.scheme_details = self._get_scheme_details()
 
     def get_nav(self):
-        pass
-        
-    def get_fund_type(self):
         pass
 
     def get_scheme_details(self):
         return self.scheme_details
 
     def _get_scheme_details(self):
+        if self.fund == 'NIFTY 50':
+            return self._build_benchmark_details(self.fund)
+
         if self._is_benchmark():
-            return None
+            benchmark = eq_schemes['benchmark'][eq_schemes['benchmark'].str.startswith(self.fund, na=False)].iloc[0]
+            benchmark = benchmark.replace('Total Return Index', '').strip()
+            return self._build_benchmark_details(benchmark)
 
         scheme_name = None
         scheme_df = None
@@ -75,60 +86,76 @@ class SchemeDetails:
             scheme_df = schemes[schemes['schemeCode'] == self.fund]
             scheme_name = scheme_df['shortName'].iloc[0]
         else:
-            trunc = truncate_string(self.fund, 32)
+            trunc = truncate_string(self.fund, 31)
             scheme_df = schemes[schemes['shortName'].str.startswith(trunc, na=False)]
-            scheme_df = scheme_df[schemes['longName'].str.contains('Dir Gr', na=False)]
+            scheme_df = self._get_direct_growth_fund(scheme_df)
             scheme_name = self.fund
         assert len(scheme_df) == 1, f"DataFrame has {len(scheme_df)} rows, expected exactly 1 row."
 
-        print(scheme_name)
-        benchmark = eq_schemes[eq_schemes['scheme_name'].str.startswith(scheme_name, na=False)]
-        scheme_df['benchmark'] = benchmark['benchmark'].iloc[0]
-        scheme_df['schemeName'] = benchmark['scheme_name'].iloc[0]
+        eq_scheme = eq_schemes[eq_schemes['scheme_name'].str.startswith(scheme_name, na=False)]
+        scheme_df['benchmark'] = eq_scheme['benchmark'].iloc[0]
+        scheme_df['schemeName'] = eq_scheme['scheme_name'].iloc[0]
+        scheme_df['category'] = eq_scheme['category'].iloc[0]
         
-        return scheme_df[['schemeCode', 'symbol', 'schemeName', 'benchmark', 'shortName', 'longName']]
+        return scheme_df[COLUMNS]
 
+    def _get_direct_growth_fund(self, scheme_df):
+        dir_growth_df = scheme_df[scheme_df['longName'].str.contains('Dir Gr', na=False)]
+        if len(dir_growth_df) > 0:
+            return dir_growth_df
+
+        non_idcw = scheme_df[~scheme_df['longName'].str.contains('IDCW', na=False)]
+        if len(non_idcw) == 1:
+            return non_idcw
+
+        return scheme_df.iloc[0]
+
+    def _is_benchmark(self):
+        return len(eq_schemes[eq_schemes['benchmark'].str.startswith(self.fund, na=False)]) > 1
+
+    def _build_benchmark_details(self, benchmark):
+        benchmark_row = {}
+
+        scheme_code = ''
+        if benchmark in YFINANCE_INDEX_CODES:
+            scheme_code = YFINANCE_INDEX_CODES[benchmark]
+            
+        benchmark_row['schemeCode'] = [scheme_code]
+        benchmark_row['schemeName'] = [benchmark]
+        benchmark_row['category'] = ['Index Fund']
+        benchmark_row['symbol'] = [scheme_code]
+        benchmark_row['shortName'] = [benchmark]
+        benchmark_row['longName'] = [benchmark]
+
+        return pd.DataFrame(benchmark_row)
+    
     def _is_scheme_code(self):
         regex = re.compile('^[A-Z.0-9]+$')
         if (regex.match(self.fund)):
             return True
         return False
 
-    def _is_benchmark(self):
-        return len(eq_schemes[eq_schemes['benchmark'].str.startswith(self.fund, na=False)]) > 1
+def convert_period_to_date(period):
+    # Get the current date
+    current_date = datetime.date.today()
+    
+    # Define regex patterns for years, months, and days
+    year_pattern = re.compile(r'(\d+)y')
+    month_pattern = re.compile(r'(\d+)m')
+    day_pattern = re.compile(r'(\d+)d')
+    
+    # Find all matches in the period string
+    years = year_pattern.findall(period)
+    months = month_pattern.findall(period)
+    days = day_pattern.findall(period)
+    
+    # Calculate the date difference
+    years = int(years[0]) if years else 0
+    months = int(months[0]) if months else 0
+    days = int(days[0]) if days else 0
+    
+    return current_date - relativedelta(years=years, months=months, days=days)
 
-    def _convert_period_to_date(period):
-        # Get the current date
-        current_date = datetime.date.today()
-        
-        # Define regex patterns for years, months, and days
-        year_pattern = re.compile(r'(\d+)y')
-        month_pattern = re.compile(r'(\d+)m')
-        day_pattern = re.compile(r'(\d+)d')
-        
-        # Find all matches in the period string
-        years = year_pattern.findall(period)
-        months = month_pattern.findall(period)
-        days = day_pattern.findall(period)
-        
-        # Calculate the date difference
-        years = int(years[0]) if years else 0
-        months = int(months[0]) if months else 0
-        days = int(days[0]) if days else 0
-        
-        # Subtract the time period from the current date
-        new_date = current_date - datetime.timedelta(days=days)
-        new_date = new_date.replace(year=new_date.year - years)
-        
-        # Handle month subtraction
-        month_diff = new_date.month - months
-        if month_diff <= 0:
-            new_date = new_date.replace(year=new_date.year - 1)
-            new_date = new_date.replace(month=month_diff + 12)
-        else:
-            new_date = new_date.replace(month=month_diff)
-        
-        return new_date
 
 def truncate_string(s, max_length):
     return s[:max_length] if len(s) > max_length else s
