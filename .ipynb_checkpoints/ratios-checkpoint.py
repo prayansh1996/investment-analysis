@@ -20,7 +20,8 @@ YFINANCE_INDEX_CODES = {
     'NIFTY 50': '^NSEI',
     'NIFTY 100': '^CNX100',
     'S&P BSE 100': 'BSE-100.BO',
-    'S&P BSE 250 Large MidCap': 'LMI250.BO'
+    'NIFTY Large Midcap 250': 'NIFTY_LARGEMID250.NS',
+    'S&P BSE 250 Large MidCap': 'LMI250.BO',
 }
 
 class Measures:
@@ -28,17 +29,29 @@ class Measures:
         self.fund = fund
         self.scheme_details = SchemeDetails(fund)
 
-    ## min_periods
     def rolling_returns(self, window, period = '15y', sampling_period = '1d'):
-        nav = self.scheme_details.get_nav(period)
         days = convert_period_to_days(window)
+        
+        def absolute(x):
+            x = x.reset_index()
+            first = x.iloc[0]
+            last = x.iloc[-1]
+            # 1 is subtracted from days as window has one day less
+            if first['date'] != subtract_days(last['date'], days-1):
+                return np.nan
 
-        if sampling_period == '1d':
-            rolling = nav
-        else:
-            rolling = nav.resample(sampling_period, on='date').last()
-        rolling = rolling.reset_index()
+            # nav is in column 0
+            return last[0]/first[0] - 1
 
+        return self._rolling_returns(absolute, window, period, sampling_period)
+
+    def cagr_rolling_returns(self, window, period = '15y', sampling_period = '1d'):
+        days = convert_period_to_days(window)
+        if days <= 365:
+            return self.rolling_returns(self, window, period, sampling_period)
+
+        years = int(days/365)
+        
         def cagr(x):
             x = x.reset_index()
             first = x.iloc[0]
@@ -46,14 +59,24 @@ class Measures:
             # 1 is subtracted from days as window has one day less
             if first['date'] != subtract_days(last['date'], days-1):
                 return np.nan
-                
-            # nav is in column 0
-            return last[0]/first[0] - 1
 
-        rolling['ratio'] = rolling.rolling(window=str(days)+'d', on='date')['nav'].apply(lambda x: cagr(x))
+            # nav is in column 0
+            return (last[0]/first[0])**(1/years) - 1
+
+        return self._rolling_returns(cagr, window, period, sampling_period)
+
+    def _rolling_returns(self, lambda_func, window, period = '15y', sampling_period = '1d'):
+        nav = self.scheme_details.get_nav(period)
+        days = convert_period_to_days(window)
+
+        if sampling_period == '1d':
+            rolling = nav
+        else:
+            rolling = nav.resample(sampling_period, on='date').last()
+
+        rolling['ratio'] = rolling.rolling(window=str(days)+'d', on='date')['nav'].apply(lambda x: lambda_func(x))
         rolling['percentage'] = rolling['ratio'].apply(lambda x: f'{x:.2%}')
-        return rolling
-        
+        return rolling.dropna()
     
     def _market_capture_ratio(returns):
         """
@@ -104,9 +127,7 @@ class SchemeDetails:
         return self.scheme_details
 
     def get_nav(self, period):
-        if self._is_benchmark():
-            return self._get_benchmark_nav(period)
-        return self._get_fund_nav(period)
+        return self._get_nav(period)
 
     def _get_scheme_details(self):
         if self.fund == 'NIFTY 50':
@@ -166,7 +187,6 @@ class SchemeDetails:
         benchmark_row['symbol'] = [scheme_code]
         benchmark_row['shortName'] = [benchmark]
         benchmark_row['longName'] = [benchmark]
-        benchmark_row['more_matchong'] = False
 
         return pd.DataFrame(benchmark_row)
     
@@ -176,19 +196,13 @@ class SchemeDetails:
             return True
         return False
 
-    def _get_benchmark_nav(self, period):
+    def _get_nav(self, period):
         start_date = str(convert_period_to_date(period))
 
         end_date = str(datetime.date.today())
         symbol = self.scheme_details['symbol'].iloc[0]
         nav_df = yf.download(symbol, start_date, end_date)
         return nav_df.reset_index()[['Date', 'Adj Close']].rename(columns={'Date': 'date', 'Adj Close': 'nav'})
-
-    def _get_fund_nav(self, period):
-        end_date = str(datetime.date.today())
-        scheme_code = self.scheme_details['schemeCode'].iloc[0]
-        nav_df = mf.history(code='0P0000XWAT',start=None,end=None,period=period,as_dataframe=True)
-        return nav_df.reset_index()[['date', 'nav']]
 
 
 def convert_period_to_date(period):
