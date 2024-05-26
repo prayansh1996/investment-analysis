@@ -76,7 +76,17 @@ class Measures:
 
         rolling['ratio'] = rolling.rolling(window=str(days)+'d', on='date')['nav'].apply(lambda x: lambda_func(x))
         rolling['percentage'] = rolling['ratio'].apply(lambda x: f'{x:.2%}')
-        return rolling.dropna()
+        rolling = rolling.dropna()
+        return self._populate_df_with_scheme_details(rolling)
+
+    # To
+    def _populate_df_with_scheme_details(self, df):
+        scheme_detail = self.scheme_details.get_scheme_details()
+        df.insert(0, 'symbol', scheme_detail['symbol'].iloc[0])
+        df.insert(1, 'schemeName', scheme_detail['schemeName'].iloc[0])
+        df.insert(2, 'category', scheme_detail['category'].iloc[0])
+        # df.insert(4, 'benchmark', scheme_detail['benchmark'].iloc[0])
+        return df
     
     def _market_capture_ratio(returns):
         """
@@ -184,6 +194,7 @@ class SchemeDetails:
         benchmark_row['schemeCode'] = [scheme_code]
         benchmark_row['schemeName'] = [benchmark]
         benchmark_row['category'] = ['Index Fund']
+        benchmark_row['benchmark'] = [benchmark]
         benchmark_row['symbol'] = [scheme_code]
         benchmark_row['shortName'] = [benchmark]
         benchmark_row['longName'] = [benchmark]
