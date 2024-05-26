@@ -2,8 +2,12 @@ import pandas as pd
 import re
 import datetime
 import yfinance as yf
+import numpy as np
 from dateutil.relativedelta import relativedelta
+from datetime import timedelta
 from packages.mftool import Mftool
+
+print("Loading schemes and eq_schemes")
 
 schemes = pd.read_csv('./data/scheme_details.csv')
 eq_schemes = pd.read_csv('./data/equity_schemes.csv')
@@ -15,13 +19,41 @@ COLUMNS = ['schemeCode', 'schemeName', 'category', 'benchmark', 'symbol', 'short
 YFINANCE_INDEX_CODES = {
     'NIFTY 50': '^NSEI',
     'NIFTY 100': '^CNX100',
-    'S&P BSE 100': 'BSE-100.BO'
+    'S&P BSE 100': 'BSE-100.BO',
+    'S&P BSE 250 Large MidCap': 'LMI250.BO'
 }
 
-class Ratios:
-    def Ratios(self, fund):
+class Measures:
+    def __init__(self, fund):
         self.fund = fund
         self.scheme_details = SchemeDetails(fund)
+
+    ## min_periods
+    def rolling_returns(self, window, period = '15y', sampling_period = '1d'):
+        nav = self.scheme_details.get_nav(period)
+        days = convert_period_to_days(window)
+
+        if sampling_period == '1d':
+            rolling = nav
+        else:
+            rolling = nav.resample(sampling_period, on='date').last()
+        rolling = rolling.reset_index()
+
+        def cagr(x):
+            x = x.reset_index()
+            first = x.iloc[0]
+            last = x.iloc[-1]
+            # 1 is subtracted from days as window has one day less
+            if first['date'] != subtract_days(last['date'], days-1):
+                return np.nan
+                
+            # nav is in column 0
+            return last[0]/first[0] - 1
+
+        rolling['ratio'] = rolling.rolling(window=str(days)+'d', on='date')['nav'].apply(lambda x: cagr(x))
+        rolling['percentage'] = rolling['ratio'].apply(lambda x: f'{x:.2%}')
+        return rolling
+        
     
     def _market_capture_ratio(returns):
         """
@@ -113,7 +145,7 @@ class SchemeDetails:
         if len(non_idcw) == 1:
             return non_idcw
 
-        return scheme_df.iloc[0]
+        return scheme_df.head(1)
 
     def _is_benchmark(self):
         if self.fund == 'NIFTY 50':
@@ -134,6 +166,7 @@ class SchemeDetails:
         benchmark_row['symbol'] = [scheme_code]
         benchmark_row['shortName'] = [benchmark]
         benchmark_row['longName'] = [benchmark]
+        benchmark_row['more_matchong'] = False
 
         return pd.DataFrame(benchmark_row)
     
@@ -143,12 +176,13 @@ class SchemeDetails:
             return True
         return False
 
-    def _get_benchmark_nav(self, start_date):
+    def _get_benchmark_nav(self, period):
         start_date = str(convert_period_to_date(period))
+
         end_date = str(datetime.date.today())
         symbol = self.scheme_details['symbol'].iloc[0]
         nav_df = yf.download(symbol, start_date, end_date)
-        return nav_df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'date', 'Close': 'nav'})
+        return nav_df.reset_index()[['Date', 'Adj Close']].rename(columns={'Date': 'date', 'Adj Close': 'nav'})
 
     def _get_fund_nav(self, period):
         end_date = str(datetime.date.today())
@@ -181,6 +215,15 @@ def convert_period_to_date(period):
     
     return new_date
 
+def convert_period_to_days(period):
+    # Create a relativedelta object based on the date string
+    start_date = convert_period_to_date(period)
+    current_date = datetime.date.today()
+    
+    return (current_date-start_date).days
 
+def subtract_days(date, days):
+    return date - timedelta(days=days)
+    
 def truncate_string(s, max_length):
     return s[:max_length] if len(s) > max_length else s
